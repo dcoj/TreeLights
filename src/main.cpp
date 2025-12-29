@@ -1,7 +1,10 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include <ArduinoOTA.h>
 #include <TimeLib.h>
 #include <TelnetStream.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
 #include <sntp.h>
 #include <TZ.h>
 #include "secrets.h"
@@ -10,14 +13,36 @@
 #define TIME_ZONE TZ_Europe_London
 
 // Pin Definitions
-#define IN1_PIN D1     // Drives L298N (Light Set A) IN1
-#define IN2_PIN D2     // Drives L298N (Light Set B) IN2
-#define ENA_PIN D5     // PWM brightness control for L298N ENA
-#define MODE_BUTTON D7 // Push button
+#define IN1_PIN D5     // Drives L298N (Light Set A) IN1
+#define IN2_PIN D6     // Drives L298N (Light Set B) IN2
+#define ENA_PIN D7     // PWM brightness control for L298N ENA
+#define MODE_BUTTON D2 // Push button
+
+// FLASH_MAP_SETUP_CONFIG(FLASH_MAP_NO_FS)
 
 // Wi-Fi connection parameters
-const char *wifi_ssid = SECRET_SSID;
-const char *wifi_password = SECRET_PASS;
+const char *wifi_ssid = WIFI_SSID;
+const char *wifi_password = WIFI_PASS;
+
+// MQTT connection parameters (add these to secrets.h)
+const char *mqtt_server = MQTT_SERVER;
+const int mqtt_port = 1883;
+const char *mqtt_user = MQTT_USER;
+const char *mqtt_password = MQTT_PASSWORD;
+const char *mqtt_client_id = "christmas-lights";
+
+// MQTT Topics
+const char *mqtt_state_topic = "homeassistant/light/christmas_lights/state";
+const char *mqtt_command_topic = "homeassistant/light/christmas_lights/set";
+const char *mqtt_mode_state_topic = "homeassistant/select/christmas_lights_mode/state";
+const char *mqtt_mode_command_topic = "homeassistant/select/christmas_lights_mode/set";
+const char *mqtt_speed_state_topic = "homeassistant/number/christmas_lights_speed/state";
+const char *mqtt_speed_command_topic = "homeassistant/number/christmas_lights_speed/set";
+
+// Create instances
+ESP8266WebServer server(80);
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
 
 // Light modes
 enum LightMode
@@ -47,6 +72,11 @@ LightMode currentMode = ALL_ON;
 bool buttonPressed = false;
 unsigned long lastButtonPress = 0;
 const unsigned long debounceTime = 200; // Debounce time in milliseconds
+
+// Configurable parameters
+int maxBrightness = 255;     // Maximum brightness (0-255)
+float speedMultiplier = 1.0; // Speed multiplier (0.1 to 5.0)
+bool lightsOn = true;        // Overall on/off state
 
 // Variables for animations
 int brightness = 255;
@@ -178,12 +208,13 @@ void allOn()
 {
   // Rapidly alternate between both sets to make all lights appear on
   unsigned long currentMillis = millis();
-  if (currentMillis - lastUpdate > 20)
+  int interval = (int)(20 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
     direction = -direction; // Flip between 1 and -1
     setDirection(direction);
-    setBrightness(10);
+    setBrightness(map(10, 0, 255, 0, maxBrightness));
   }
 }
 
@@ -191,12 +222,13 @@ void alternateFlash()
 {
   // Alternate between set A and set B
   unsigned long currentMillis = millis();
-  if (currentMillis - lastUpdate > 500)
+  int interval = (int)(500 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
     direction = -direction; // Flip between 1 and -1
     setDirection(direction);
-    setBrightness(255);
+    setBrightness(maxBrightness);
   }
 }
 
@@ -204,7 +236,8 @@ void fadeAll()
 {
   // Fade both sets of lights up and down together
   unsigned long currentMillis = millis();
-  if (currentMillis - lastUpdate > 30)
+  int interval = (int)(30 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
 
@@ -212,10 +245,10 @@ void fadeAll()
     brightness = brightness + fadeAmount;
 
     // Reverse fade direction when limits are reached
-    if (brightness <= 0 || brightness >= 255)
+    if (brightness <= 0 || brightness >= maxBrightness)
     {
       fadeAmount = -fadeAmount;
-      brightness = constrain(brightness, 0, 255);
+      brightness = constrain(brightness, 0, maxBrightness);
 
       // Switch direction at the bottom of the fade
       if (brightness <= 0)
@@ -233,7 +266,8 @@ void fadeAlternate()
 {
   // Fade while alternating between sets
   unsigned long currentMillis = millis();
-  if (currentMillis - lastUpdate > 30)
+  int interval = (int)(30 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
 
@@ -241,10 +275,10 @@ void fadeAlternate()
     brightness = brightness + fadeAmount;
 
     // Reverse fade direction when limits are reached
-    if (brightness <= 0 || brightness >= 255)
+    if (brightness <= 0 || brightness >= maxBrightness)
     {
       fadeAmount = -fadeAmount;
-      brightness = constrain(brightness, 0, 255);
+      brightness = constrain(brightness, 0, maxBrightness);
 
       // Switch between sets at the bottom of the fade
       if (brightness <= 0)
@@ -262,7 +296,8 @@ void twinkle()
 {
   // Random twinkling effect
   unsigned long currentMillis = millis();
-  if (currentMillis - lastUpdate > 50)
+  int interval = (int)(50 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
 
@@ -277,11 +312,12 @@ void twinkle()
     }
 
     // Random brightness
-    brightness = random(100, 255);
+    brightness = random(100, maxBrightness);
 
     setDirection(direction);
     setBrightness(brightness);
-    delay(random(10, 50)); // Small random delay for twinkling effect
+    int delayTime = (int)(random(10, 50) / speedMultiplier);
+    delay(delayTime); // Small random delay for twinkling effect
   }
 }
 
@@ -289,7 +325,8 @@ void chase()
 {
   // Light chasing effect
   unsigned long currentMillis = millis();
-  if (currentMillis - lastUpdate > 100)
+  int interval = (int)(100 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
 
@@ -305,7 +342,9 @@ void chase()
     }
 
     // Brightness varies with position
-    brightness = 100 + 155 * sin((PI * animationStep) / 5);
+    int minBright = maxBrightness * 0.4;
+    int maxBright = maxBrightness;
+    brightness = minBright + (maxBright - minBright) * sin((PI * animationStep) / 5);
 
     setDirection(direction);
     setBrightness(brightness);
@@ -316,7 +355,8 @@ void meteor()
 {
   // Meteor shower effect
   unsigned long currentMillis = millis();
-  if (currentMillis - lastUpdate > 50)
+  int interval = (int)(50 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
 
@@ -327,14 +367,16 @@ void meteor()
     {
       // Meteor on set A
       direction = 1;
-      brightness = (animationStep < 5) ? (animationStep * 50) : (255 - (animationStep - 5) * 50);
+      int stepBright = (animationStep < 5) ? (animationStep * 50) : (255 - (animationStep - 5) * 50);
+      brightness = map(stepBright, 0, 255, 0, maxBrightness);
     }
     else
     {
       // Meteor on set B
       direction = -1;
       int step = animationStep - 10;
-      brightness = (step < 5) ? (step * 50) : (255 - (step - 5) * 50);
+      int stepBright = (step < 5) ? (step * 50) : (255 - (step - 5) * 50);
+      brightness = map(stepBright, 0, 255, 0, maxBrightness);
     }
 
     setDirection(direction);
@@ -348,22 +390,25 @@ void musicSync()
   unsigned long currentMillis = millis();
   static int pulsePhase = 0;
 
-  if (currentMillis - lastUpdate > 30)
+  int interval = (int)(30 / speedMultiplier);
+  if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
 
     pulsePhase = (pulsePhase + 1) % 100;
 
     // Create a pulsing pattern
+    int minBright = maxBrightness * 0.4;
+    int brightRange = maxBrightness - minBright;
     if (pulsePhase < 50)
     {
       direction = 1;
-      brightness = 100 + 155 * sin((PI * pulsePhase) / 50);
+      brightness = minBright + brightRange * sin((PI * pulsePhase) / 50);
     }
     else
     {
       direction = -1;
-      brightness = 100 + 155 * sin((PI * (pulsePhase - 50)) / 50);
+      brightness = minBright + brightRange * sin((PI * (pulsePhase - 50)) / 50);
     }
 
     setDirection(direction);
@@ -380,9 +425,288 @@ void handleNumericInput(int input)
   }
 }
 
+// Publish Home Assistant MQTT Discovery messages
+void publishHomeAssistantDiscovery()
+{
+  StaticJsonDocument<768> doc;
+  String output;
+
+  // Light entity discovery
+  doc.clear();
+  doc["name"] = "Christmas Lights";
+  doc["unique_id"] = "christmas_lights_main";
+  doc["state_topic"] = mqtt_state_topic;
+  doc["command_topic"] = mqtt_command_topic;
+  doc["brightness_state_topic"] = mqtt_state_topic;
+  doc["brightness_command_topic"] = mqtt_command_topic;
+  doc["brightness_scale"] = 255;
+  doc["on_command_type"] = "brightness";
+  doc["schema"] = "json";
+  doc["device"]["identifiers"][0] = "christmas_lights_esp8266";
+  doc["device"]["name"] = "Christmas Tree Lights";
+  doc["device"]["model"] = "ESP8266 + L298N";
+  doc["device"]["manufacturer"] = "DIY";
+
+  output = "";
+  serializeJson(doc, output);
+  mqttClient.publish("homeassistant/light/christmas_lights/config", output.c_str(), true);
+
+  // Mode select entity discovery
+  doc.clear();
+  doc["name"] = "Christmas Lights Mode";
+  doc["unique_id"] = "christmas_lights_mode";
+  doc["state_topic"] = mqtt_mode_state_topic;
+  doc["command_topic"] = mqtt_mode_command_topic;
+  JsonArray options = doc.createNestedArray("options");
+  for (int i = 0; i < MODE_COUNT; i++)
+  {
+    options.add(modeNames[i]);
+  }
+  doc["device"]["identifiers"][0] = "christmas_lights_esp8266";
+
+  output = "";
+  serializeJson(doc, output);
+  mqttClient.publish("homeassistant/select/christmas_lights_mode/config", output.c_str(), true);
+
+  // Speed number entity discovery
+  doc.clear();
+  doc["name"] = "Christmas Lights Speed";
+  doc["unique_id"] = "christmas_lights_speed";
+  doc["state_topic"] = mqtt_speed_state_topic;
+  doc["command_topic"] = mqtt_speed_command_topic;
+  doc["min"] = 0.1;
+  doc["max"] = 5.0;
+  doc["step"] = 0.1;
+  doc["mode"] = "slider";
+  doc["device"]["identifiers"][0] = "christmas_lights_esp8266";
+
+  output = "";
+  serializeJson(doc, output);
+  mqttClient.publish("homeassistant/number/christmas_lights_speed/config", output.c_str(), true);
+
+  log("Home Assistant discovery messages published");
+}
+
+// Publish MQTT state
+void publishMQTTState()
+{
+  StaticJsonDocument<256> doc;
+  doc["state"] = lightsOn ? "ON" : "OFF";
+  doc["brightness"] = maxBrightness;
+
+  String output;
+  serializeJson(doc, output);
+  mqttClient.publish(mqtt_state_topic, output.c_str(), true);
+}
+
+void publishMQTTMode()
+{
+  mqttClient.publish(mqtt_mode_state_topic, modeNames[currentMode], true);
+}
+
+void publishMQTTSpeed()
+{
+  char speedStr[10];
+  dtostrf(speedMultiplier, 4, 2, speedStr);
+  mqttClient.publish(mqtt_speed_state_topic, speedStr, true);
+}
+
+// REST API Handlers
+void handleRoot()
+{
+  String html = "<html><head><title>Christmas Lights Control</title></head><body>";
+  html += "<h1>Christmas Lights Controller</h1>";
+  html += "<p>Current Mode: <b>" + String(modeNames[currentMode]) + "</b></p>";
+  html += "<p>Brightness: <b>" + String(maxBrightness) + "</b></p>";
+  html += "<p>Speed: <b>" + String(speedMultiplier) + "</b></p>";
+  html += "<p>State: <b>" + String(lightsOn ? "ON" : "OFF") + "</b></p>";
+  html += "<h2>API Endpoints:</h2>";
+  html += "<ul>";
+  html += "<li>GET /status - Get current status</li>";
+  html += "<li>POST /mode?value=[0-" + String(MODE_COUNT - 1) + "] - Set mode</li>";
+  html += "<li>POST /brightness?value=[0-255] - Set brightness</li>";
+  html += "<li>POST /speed?value=[0.1-5.0] - Set speed</li>";
+  html += "<li>POST /state?value=[on|off] - Turn on/off</li>";
+  html += "</ul>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleStatus()
+{
+  StaticJsonDocument<256> doc;
+  doc["mode"] = currentMode;
+  doc["mode_name"] = modeNames[currentMode];
+  doc["brightness"] = maxBrightness;
+  doc["speed"] = speedMultiplier;
+  doc["state"] = lightsOn ? "on" : "off";
+
+  String output;
+  serializeJson(doc, output);
+  server.send(200, "application/json", output);
+}
+
+void handleSetMode()
+{
+  if (server.hasArg("value"))
+  {
+    int mode = server.arg("value").toInt();
+    if (mode >= 0 && mode < MODE_COUNT)
+    {
+      changeMode(static_cast<LightMode>(mode));
+      publishMQTTMode();
+      server.send(200, "application/json", "{\"status\":\"ok\",\"mode\":" + String(mode) + "}");
+      return;
+    }
+  }
+  server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid mode\"}");
+}
+
+void handleSetBrightness()
+{
+  if (server.hasArg("value"))
+  {
+    int bright = server.arg("value").toInt();
+    if (bright >= 0 && bright <= 255)
+    {
+      maxBrightness = bright;
+      publishMQTTState();
+      server.send(200, "application/json", "{\"status\":\"ok\",\"brightness\":" + String(bright) + "}");
+      return;
+    }
+  }
+  server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid brightness (0-255)\"}");
+}
+
+void handleSetSpeed()
+{
+  if (server.hasArg("value"))
+  {
+    float speed = server.arg("value").toFloat();
+    if (speed >= 0.1 && speed <= 5.0)
+    {
+      speedMultiplier = speed;
+      publishMQTTSpeed();
+      server.send(200, "application/json", "{\"status\":\"ok\",\"speed\":" + String(speed) + "}");
+      return;
+    }
+  }
+  server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid speed (0.1-5.0)\"}");
+}
+
+void handleSetState()
+{
+  if (server.hasArg("value"))
+  {
+    String state = server.arg("value");
+    state.toLowerCase();
+    if (state == "on" || state == "off")
+    {
+      lightsOn = (state == "on");
+      publishMQTTState();
+      server.send(200, "application/json", "{\"status\":\"ok\",\"state\":\"" + state + "\"}");
+      return;
+    }
+  }
+  server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid state (on/off)\"}");
+}
+
+// MQTT callback function
+void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+  String message;
+  for (unsigned int i = 0; i < length; i++)
+  {
+    message += (char)payload[i];
+  }
+
+  log(("MQTT message received on " + String(topic) + ": " + message).c_str());
+
+  if (String(topic) == mqtt_command_topic)
+  {
+    // Handle light on/off commands
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, message);
+
+    if (!error)
+    {
+      if (doc.containsKey("state"))
+      {
+        String state = doc["state"];
+        lightsOn = (state == "ON");
+        publishMQTTState();
+      }
+      if (doc.containsKey("brightness"))
+      {
+        maxBrightness = doc["brightness"];
+        publishMQTTState();
+      }
+    }
+  }
+  else if (String(topic) == mqtt_mode_command_topic)
+  {
+    // Handle mode change
+    for (int i = 0; i < MODE_COUNT; i++)
+    {
+      if (message == modeNames[i])
+      {
+        changeMode(static_cast<LightMode>(i));
+        publishMQTTMode();
+        break;
+      }
+    }
+  }
+  else if (String(topic) == mqtt_speed_command_topic)
+  {
+    // Handle speed change
+    speedMultiplier = message.toFloat();
+    speedMultiplier = constrain(speedMultiplier, 0.1, 5.0);
+    publishMQTTSpeed();
+  }
+}
+
+// Connect to MQTT broker
+void connectMQTT()
+{
+  while (!mqttClient.connected())
+  {
+    log("Connecting to MQTT...");
+    if (mqttClient.connect(mqtt_client_id, mqtt_user, mqtt_password))
+    {
+      log("MQTT connected");
+
+      // Subscribe to command topics
+      mqttClient.subscribe(mqtt_command_topic);
+      mqttClient.subscribe(mqtt_mode_command_topic);
+      mqttClient.subscribe(mqtt_speed_command_topic);
+
+      // Publish Home Assistant discovery messages
+      publishHomeAssistantDiscovery();
+
+      // Publish initial state
+      publishMQTTState();
+      publishMQTTMode();
+      publishMQTTSpeed();
+    }
+    else
+    {
+      log("MQTT connection failed, retrying in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
 void loop()
 {
   ArduinoOTA.handle();
+  server.handleClient();
+
+  // Maintain MQTT connection
+  if (!mqttClient.connected())
+  {
+    connectMQTT();
+  }
+  mqttClient.loop();
 
   // Handle Telnet commands
   int input = TelnetStream.read();
@@ -428,6 +752,14 @@ void loop()
 
   // Check for mode button press
   checkModeButton();
+
+  // Only run animations if lights are on
+  if (!lightsOn)
+  {
+    setDirection(0);
+    setBrightness(0);
+    return;
+  }
 
   // Run the current light mode
   switch (currentMode)
@@ -491,6 +823,22 @@ void setup()
   {
     twinkleState[i] = random(0, 255);
   }
+
+  // Setup MQTT
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(1024); // Increase buffer for discovery messages
+  connectMQTT();
+
+  // Setup HTTP server
+  server.on("/", handleRoot);
+  server.on("/status", handleStatus);
+  server.on("/mode", HTTP_POST, handleSetMode);
+  server.on("/brightness", HTTP_POST, handleSetBrightness);
+  server.on("/speed", HTTP_POST, handleSetSpeed);
+  server.on("/state", HTTP_POST, handleSetState);
+  server.begin();
+  log("HTTP server started");
 
   log("Christmas Lights Controller Ready");
   printModeMenu();
