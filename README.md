@@ -1,4 +1,4 @@
-# Christmas Tree Lights Controller
+# Smart Christmas Lights Controller
 
 ESP8266-based Christmas lights controller with Home Assistant integration and REST API.
 
@@ -6,8 +6,8 @@ ESP8266-based Christmas lights controller with Home Assistant integration and RE
 
 - ESP8266 (D1 Mini Pro)
 - L298N Motor Driver
-- Christmas lights with reverse polarity wiring
-- Push button (connected to D7)
+- Christmas lights with reverse polarity wiring (Check your existing PSU is 32v like this one: [Amazon](https://www.amazon.de/-/en/Pack-32V-3-6W-Power-Supply/dp/B0FKTHBZC2?crid=17AQG18E51KJC)
+- Push button (connected to D2 to toggle setting like the original)
 
 ## Features
 
@@ -22,15 +22,8 @@ ESP8266-based Christmas lights controller with Home Assistant integration and RE
 
 ## Configuration
 
-1. Copy `src/secrets.example.h` to `src/secrets.h`
-2. Update with your WiFi credentials
-3. In `main.cpp`, update the MQTT server settings:
-   ```cpp
-   const char *mqtt_server = "homeassistant.local"; // Your Home Assistant IP/hostname
-   const int mqtt_port = 1883;
-   const char *mqtt_user = "";     // MQTT username (if required)
-   const char *mqtt_password = ""; // MQTT password (if required)
-   ```
+1. Copy `./src/secrets.example.h` to `./src/secrets.h` and update WIFI and MQTT options.
+2. Copy `./config.sample.ini` to `./config.ini` and update chip connection options.
 
 ## REST API
 
@@ -145,23 +138,32 @@ Commands:
 # Build
 pio run
 
-# Upload via OTA (after first upload)
+# Upload
 pio run -t upload
-
-# Upload via USB
-pio run -t upload --upload-port /dev/cu.usbserial-*
 ```
 
 ## Pin Configuration
 
-- **D1** (GPIO5) - L298N IN1 (Set A)
-- **D2** (GPIO4) - L298N IN2 (Set B)
-- **D5** (GPIO14) - L298N ENA (PWM brightness)
-- **D7** (GPIO13) - Mode button (pull-up)
+- **D5** - L298N IN1 (Set A)
+- **D6** - L298N IN2 (Set B)
+- **D7** - L298N ENA (PWM brightness)
+- **D2** - Mode button (pull-up)
 
 ## Troubleshooting
 
 - If MQTT doesn't connect, verify your Home Assistant's MQTT broker is running
 - Check the IP address in Serial Monitor or your router's DHCP table
-- For OTA updates to work, ensure the ESP8266 is on the same network
-- If animations are too fast/slow, adjust the speed multiplier via API or Home Assistant
+- For OTA updates to work, ensure the ESP8266 is on the same network.
+- When running from USB power some Clone 8266s' have bad power managment components and can't reliably power the wifi chip.
+
+## Schematic
+
+![](./pcb/christmas.svg)
+
+- L298N servo driver powers the LED string (~€2-5)
+- 5V Step down is used for Driver and 8266 power (Don't connect to USB at the same time!)
+- 100µF electrolytic capacitor (power supply filtering)
+- 0.1µF ceramic capacitor (high freq filtering and smoothing of PWM)
+
+- VCC should be around 30 - 32V
+- A 0.1Ω 1W resistor could be added and connected to A1 for current sensing.
