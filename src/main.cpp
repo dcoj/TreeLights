@@ -214,7 +214,7 @@ void allOn()
     lastUpdate = currentMillis;
     direction = -direction; // Flip between 1 and -1
     setDirection(direction);
-    setBrightness(map(10, 0, 255, 0, maxBrightness));
+    setBrightness(maxBrightness);
   }
 }
 
@@ -437,15 +437,18 @@ void publishHomeAssistantDiscovery()
   doc["unique_id"] = "christmas_lights_main";
   doc["state_topic"] = mqtt_state_topic;
   doc["command_topic"] = mqtt_command_topic;
-  doc["brightness_state_topic"] = mqtt_state_topic;
-  doc["brightness_command_topic"] = mqtt_command_topic;
-  doc["brightness_scale"] = 255;
-  doc["on_command_type"] = "brightness";
   doc["schema"] = "json";
+  doc["brightness"] = true;
+  doc["color_mode"] = true;
+  doc["supported_color_modes"][0] = "brightness";
+  doc["brightness_scale"] = 255;
   doc["device"]["identifiers"][0] = "christmas_lights_esp8266";
   doc["device"]["name"] = "Christmas Tree Lights";
   doc["device"]["model"] = "ESP8266 + L298N";
   doc["device"]["manufacturer"] = "DIY";
+  doc["optimistic"] = false;
+
+  log("Preparing light entity discovery message");
 
   output = "";
   serializeJson(doc, output);
@@ -493,10 +496,13 @@ void publishMQTTState()
   StaticJsonDocument<256> doc;
   doc["state"] = lightsOn ? "ON" : "OFF";
   doc["brightness"] = maxBrightness;
+  doc["color_mode"] = "brightness";
 
   String output;
   serializeJson(doc, output);
   mqttClient.publish(mqtt_state_topic, output.c_str(), true);
+
+  log(("Published state: " + output).c_str());
 }
 
 void publishMQTTMode()
@@ -570,6 +576,14 @@ void handleSetBrightness()
     if (bright >= 0 && bright <= 255)
     {
       maxBrightness = bright;
+      log(("Brightness set to: " + String(bright)).c_str());
+
+      // Apply brightness to current animation
+      if (currentMode == ALL_ON)
+      {
+        setBrightness(maxBrightness);
+      }
+
       publishMQTTState();
       server.send(200, "application/json", "{\"status\":\"ok\",\"brightness\":" + String(bright) + "}");
       return;
@@ -634,11 +648,13 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       {
         String state = doc["state"];
         lightsOn = (state == "ON");
+        log(("State changed to: " + state).c_str());
         publishMQTTState();
       }
       if (doc.containsKey("brightness"))
       {
         maxBrightness = doc["brightness"];
+        log(("Brightness changed to: " + String(maxBrightness)).c_str());
         publishMQTTState();
       }
     }
@@ -680,6 +696,8 @@ void connectMQTT()
       mqttClient.subscribe(mqtt_mode_command_topic);
       mqttClient.subscribe(mqtt_speed_command_topic);
 
+      log("Command topics subscribed");
+
       // Publish Home Assistant discovery messages
       publishHomeAssistantDiscovery();
 
@@ -687,6 +705,11 @@ void connectMQTT()
       publishMQTTState();
       publishMQTTMode();
       publishMQTTSpeed();
+
+      // log((String("Initial state published - brightness: ") + String(maxBrightness) +
+      //      ", mode: " + modeNames[currentMode] +
+      //      ", speed: " + String(speedMultiplier))
+      //         .c_str());
     }
     else
     {
@@ -796,7 +819,8 @@ void loop()
 
 void setup()
 {
-  Serial.begin(9600);
+  Serial.begin(115200);
+  analogWriteRange(255);
   Serial.println("Booting...");
 
   connectToWiFi();
