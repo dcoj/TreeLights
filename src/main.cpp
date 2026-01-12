@@ -208,7 +208,7 @@ void allOn()
 {
   // Rapidly alternate between both sets to make all lights appear on
   unsigned long currentMillis = millis();
-  int interval = (int)(20 / speedMultiplier);
+  unsigned long interval = (unsigned long)(20 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -222,7 +222,7 @@ void alternateFlash()
 {
   // Alternate between set A and set B
   unsigned long currentMillis = millis();
-  int interval = (int)(500 / speedMultiplier);
+  unsigned long interval = (unsigned long)(500 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -236,7 +236,7 @@ void fadeAll()
 {
   // Fade both sets of lights up and down together
   unsigned long currentMillis = millis();
-  int interval = (int)(30 / speedMultiplier);
+  unsigned long interval = (unsigned long)(30 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -266,7 +266,7 @@ void fadeAlternate()
 {
   // Fade while alternating between sets
   unsigned long currentMillis = millis();
-  int interval = (int)(30 / speedMultiplier);
+  unsigned long interval = (unsigned long)(30 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -296,7 +296,7 @@ void twinkle()
 {
   // Random twinkling effect
   unsigned long currentMillis = millis();
-  int interval = (int)(50 / speedMultiplier);
+  unsigned long interval = (unsigned long)(50 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -325,7 +325,7 @@ void chase()
 {
   // Light chasing effect
   unsigned long currentMillis = millis();
-  int interval = (int)(100 / speedMultiplier);
+  unsigned long interval = (unsigned long)(100 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -355,7 +355,7 @@ void meteor()
 {
   // Meteor shower effect
   unsigned long currentMillis = millis();
-  int interval = (int)(50 / speedMultiplier);
+  unsigned long interval = (unsigned long)(50 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -390,7 +390,7 @@ void musicSync()
   unsigned long currentMillis = millis();
   static int pulsePhase = 0;
 
-  int interval = (int)(30 / speedMultiplier);
+  unsigned long interval = (unsigned long)(30 / speedMultiplier);
   if (currentMillis - lastUpdate > interval)
   {
     lastUpdate = currentMillis;
@@ -428,7 +428,7 @@ void handleNumericInput(int input)
 // Publish Home Assistant MQTT Discovery messages
 void publishHomeAssistantDiscovery()
 {
-  StaticJsonDocument<768> doc;
+  JsonDocument doc;
   String output;
 
   // Light entity discovery
@@ -460,7 +460,7 @@ void publishHomeAssistantDiscovery()
   doc["unique_id"] = "christmas_lights_mode";
   doc["state_topic"] = mqtt_mode_state_topic;
   doc["command_topic"] = mqtt_mode_command_topic;
-  JsonArray options = doc.createNestedArray("options");
+  JsonArray options = doc["options"].to<JsonArray>();
   for (int i = 0; i < MODE_COUNT; i++)
   {
     options.add(modeNames[i]);
@@ -493,7 +493,7 @@ void publishHomeAssistantDiscovery()
 // Publish MQTT state
 void publishMQTTState()
 {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   doc["state"] = lightsOn ? "ON" : "OFF";
   doc["brightness"] = maxBrightness;
   doc["color_mode"] = "brightness";
@@ -540,7 +540,7 @@ void handleRoot()
 
 void handleStatus()
 {
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   doc["mode"] = currentMode;
   doc["mode_name"] = modeNames[currentMode];
   doc["brightness"] = maxBrightness;
@@ -639,19 +639,19 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   if (String(topic) == mqtt_command_topic)
   {
     // Handle light on/off commands
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
 
     if (!error)
     {
-      if (doc.containsKey("state"))
+      if (doc["state"].is<const char*>())
       {
         String state = doc["state"];
         lightsOn = (state == "ON");
         log(("State changed to: " + state).c_str());
         publishMQTTState();
       }
-      if (doc.containsKey("brightness"))
+      if (doc["brightness"].is<int>())
       {
         maxBrightness = doc["brightness"];
         log(("Brightness changed to: " + String(maxBrightness)).c_str());
